@@ -13,8 +13,27 @@ LOG_MODULE_REGISTER(pairing, LOG_LEVEL_INF);
 static struct pairing_discovery* discovered_dongles = NULL;
 static struct pairing_discovery current_pairing_dongle;
 static struct esb_payload tx_payload_pair = ESB_EMPTY_PAYLOAD(0, 16);
-static uint8_t paired_addr[8] = {0}; // Paired address bytes: <0> Is Paired | <1> Tracker Id | <2-8> Dongle Address
-static bool pairing_needs_saving = false;
+// Slot 0 is mirrored in retained->paired_addr, slot 1 is stored only in NVS
+static uint8_t paired_addr[ROAM_SLOTS][8] = {0}; // Paired address bytes: <0> Is Paired | <1> Tracker Id | <2-8> Dongle Address
+static int active_slot = 0;
+static uint8_t slots_needing_save = 0;
+
+static bool slot_is_paired(int slot) {
+    return paired_addr[slot][0] != 0;
+}
+
+static void mark_slot_changed(int slot) {
+    if(slot == 0)
+        memcpy(retained->paired_addr, paired_addr[0], sizeof(paired_addr[0]));
+    slots_needing_save |= 1 << slot;
+}
+
+static void use_slot(int slot) {
+    active_slot = slot;
+    retained->active_pair_slot = slot;
+    connection_set_id(paired_addr[slot][1]);
+    esb_set_addr_paired(&paired_addr[slot][2]);
+}
 
 void prepare_pair_payload() {
 	uint64_t device_addr = *((uint64_t *) NRF_FICR->DEVICEADDR) & 0xFFFFFFFFFFFF;
@@ -28,12 +47,19 @@ void prepare_pair_payload() {
     tx_payload_pair.data[15] = ESB_DEVICE_TYPE_NORMAL;
 }
 
+void pairing_load_nvs(void) {
+    sys_read(PAIRED_2_ID, paired_addr[1], sizeof(paired_addr[1]));
+}
+
 void pairing_restore(void) {
     // Read paired address from retained
-	memcpy(paired_addr, retained->paired_addr, sizeof(paired_addr));
-    if(paired_addr[0] != 0) {
-        connection_set_id(paired_addr[1]);
-        esb_set_addr_paired(&paired_addr[2]);
+	memcpy(paired_addr[0], retained->paired_addr, sizeof(paired_addr[0]));
+    int slot = retained->active_pair_slot < ROAM_SLOTS ? retained->active_pair_slot : 0;
+    if(!slot_is_paired(slot))
+        slot = slot == 0 ? 1 : 0;
+    if(slot_is_paired(slot)) {
+        use_slot(slot);
+        retained_update();
         esb_set_tracker_state(FIND_DONGLE);
     }
 }
@@ -93,26 +119,80 @@ void pairing_dongle_found(const struct esb_payload *payload) {
     }
 }
 
+// May run from the ESB event handler, so flash is only written later in pairing_save_retained
 void pairing_set_pair(uint64_t dongle_hwid, uint8_t tracker_id) {
-	paired_addr[0] = 1;
-    paired_addr[1] = tracker_id;
-	memcpy(&paired_addr[2], &dongle_hwid, 6);
-	memcpy(retained->paired_addr, paired_addr, sizeof(paired_addr));
-    pairing_needs_saving = true;
-	LOG_INF("Pairing info set");
-	pairing_restore();
+    int slot = pairing_slot_for_dongle(dongle_hwid);
+    if(slot == ROAM_NO_SLOT) {
+        if(!slot_is_paired(0))
+            slot = 0;
+        else if(!slot_is_paired(1))
+            slot = 1;
+        else
+            slot = active_slot == 0 ? 1 : 0; // Both in use: keep the dongle we are using
+    }
+	paired_addr[slot][0] = 1;
+    paired_addr[slot][1] = tracker_id;
+	memcpy(&paired_addr[slot][2], &dongle_hwid, 6);
+    mark_slot_changed(slot);
+	LOG_INF("Pairing info set in slot %d", slot);
+    use_slot(slot);
+    esb_set_tracker_state(FIND_DONGLE);
     set_led(SYS_LED_PATTERN_ONESHOT_COMPLETE, SYS_LED_PRIORITY_PAIR);
 }
 
 void pairing_save_retained() {
-    if(pairing_needs_saving) {
-        pairing_needs_saving = false;
-        sys_write(PAIRED_ID, retained->paired_addr, paired_addr, sizeof(paired_addr)); // Write new address and tracker id
+    uint8_t slots = slots_needing_save;
+    if(slots != 0) {
+        slots_needing_save = 0;
+        if(slots & (1 << 0))
+            sys_write(PAIRED_ID, retained->paired_addr, paired_addr[0], sizeof(paired_addr[0])); // Write new address and tracker id
+        if(slots & (1 << 1))
+            sys_write(PAIRED_2_ID, NULL, paired_addr[1], sizeof(paired_addr[1]));
+        retained_update();
     }
 }
 
+uint64_t pairing_get_dongle(int slot) {
+    uint64_t dongle_hwid = 0;
+    memcpy(&dongle_hwid, &paired_addr[slot][2], 6);
+    return dongle_hwid;
+}
+
+uint8_t pairing_get_tracker_id(int slot) {
+    return paired_addr[slot][1];
+}
+
 uint64_t pairing_get_paired_dongle() {
-    return (*(uint64_t *) &retained->paired_addr[0] >> 16) & 0xFFFFFFFFFFFF;
+    return pairing_get_dongle(active_slot);
+}
+
+int pairing_slot_for_dongle(uint64_t dongle_hwid) {
+    for(int slot = 0; slot < ROAM_SLOTS; ++slot) {
+        if(slot_is_paired(slot) && pairing_get_dongle(slot) == dongle_hwid)
+            return slot;
+    }
+    return ROAM_NO_SLOT;
+}
+
+int pairing_active_slot(void) {
+    return active_slot;
+}
+
+uint8_t pairing_paired_mask(void) {
+    uint8_t mask = 0;
+    for(int slot = 0; slot < ROAM_SLOTS; ++slot) {
+        if(slot_is_paired(slot))
+            mask |= 1 << slot;
+    }
+    return mask;
+}
+
+bool pairing_has_alternate(void) {
+    return pairing_paired_mask() == ((1 << ROAM_SLOTS) - 1);
+}
+
+void pairing_select_slot(int slot) {
+    use_slot(slot);
 }
 
 void pairing_dongle_response(const struct esb_payload *payload) {
@@ -146,6 +226,10 @@ int compare_dongles(const void* a, const void* b) {
     if(flag_comp != 0)
         return flag_comp;
     flag_comp = (a_d->flags & ESB_DONGLE_FLAG_FORCE_PAIRING) - (b_d->flags & ESB_DONGLE_FLAG_FORCE_PAIRING);
+    if(flag_comp != 0)
+        return flag_comp;
+    // Try dongles we don't know yet first, so that pairing again adds the second dongle
+    flag_comp = (pairing_slot_for_dongle(a_d->dongle_hwid) != ROAM_NO_SLOT) - (pairing_slot_for_dongle(b_d->dongle_hwid) != ROAM_NO_SLOT);
     if(flag_comp != 0)
         return flag_comp;
     return (a_d->rssi > b_d->rssi) - (a_d->rssi < b_d->rssi);
@@ -226,7 +310,26 @@ void pairing_request_pair(void)
 void pairing_clear_pair(void)
 {
     memset(paired_addr, 0, sizeof(paired_addr));
-	sys_write(PAIRED_ID, &retained->paired_addr, paired_addr, sizeof(paired_addr)); // write zeroes
+    active_slot = 0;
+    retained->active_pair_slot = 0;
+	sys_write(PAIRED_ID, &retained->paired_addr, paired_addr[0], sizeof(paired_addr[0])); // write zeroes
+	sys_write(PAIRED_2_ID, NULL, paired_addr[1], sizeof(paired_addr[1]));
 	LOG_INF("Pairing data reset");
 	pairing_request_pair();
+}
+
+// May run from the ESB event handler, so flash is only written later in pairing_save_retained
+void pairing_forget_active(void)
+{
+    int forgotten = active_slot;
+    int other = forgotten == 0 ? 1 : 0;
+    memset(paired_addr[forgotten], 0, sizeof(paired_addr[forgotten]));
+    mark_slot_changed(forgotten);
+    LOG_INF("Pairing in slot %d forgotten", forgotten);
+    if(slot_is_paired(other)) {
+        use_slot(other);
+        esb_set_tracker_state(FIND_DONGLE);
+    } else {
+        pairing_request_pair();
+    }
 }

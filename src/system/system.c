@@ -207,6 +207,8 @@ static int sys_retained_init(void)
 		LOG_INF("Validated RAM");
 		ram_retention_valid = true;
 	}
+	// Runs before the other threads, as NVS mounting is not safe to race
+	pairing_load_nvs();
 	return 0;
 }
 

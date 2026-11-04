@@ -88,16 +88,21 @@ uint8_t packets_failed;
 uint32_t packets_rssi;
 uint64_t last_received_packet = 0;
 
-void found_dongle(uint64_t dongle_hwid, uint8_t channel, int32_t received_time) {
-	esb_set_channel(channel);
+static struct roam_link link_quality;
+static struct roam_search dongle_search;
+static volatile bool dongle_search_open = false;
+
+static void found_dongle(int slot, const struct roam_candidate *candidate) {
+	bool switched = slot != pairing_active_slot();
+	pairing_select_slot(slot);
+	esb_set_channel(candidate->channel);
 	dongle_found = true;
-	int32_t time = tdma_get_time();
-	int32_t diff = (received_time - time);
-	LOG_INF("Our time: %d, rcvd time: %d", time, received_time);
-	tdma_update_timer_offset(diff);
+	tdma_update_timer_offset(candidate->timer_diff);
 	retained->last_dongle_channel = esb_get_channel();
 	retained_update();
-	LOG_INF("Dongle successfully found!");
+	tx_errors = 0;
+	roam_link_search_finished(&link_quality, switched, k_uptime_get_32());
+	LOG_INF("Dongle successfully found in slot %d (rssi %d, %s)", slot, candidate->rssi, switched ? "switched" : "same dongle");
 	esb_set_tracker_state(DONGLE_CONNECT);
 }
 
@@ -108,6 +113,7 @@ void event_handler(struct esb_evt const *event)
 	{
 	case ESB_EVENT_TX_SUCCESS:
 		last_tx_success = k_uptime_get();
+		roam_link_record(&link_quality, true);
 		if (tx_errors > TX_ERROR_CLEAR_RATE)
 			tx_errors -= TX_ERROR_CLEAR_RATE;
 		else
@@ -116,6 +122,7 @@ void event_handler(struct esb_evt const *event)
 		break;
 	case ESB_EVENT_TX_FAILED:
 		last_tx_fail = k_uptime_get();
+		roam_link_record(&link_quality, false);
 		if (tx_errors < TX_ERROR_MAX)
 			tx_errors++;
 		packets_failed++;
@@ -173,9 +180,12 @@ void event_handler(struct esb_evt const *event)
 						uint8_t channel = rx_payload.data[8];
         				LOG_INF("Found dongle %012llX on channel %d, rssi %d", dongle_hwid, channel, rx_payload.rssi);
 						if(esb_get_tracker_state() == FIND_DONGLE) {
-							// Looking for dongle when paired
-							if(!dongle_found && pairing_get_paired_dongle() == dongle_hwid) {
-								found_dongle(dongle_hwid, channel, *((uint32_t *) &rx_payload.data[10]));
+							// Looking for dongle when paired, find_dongle() chooses which one to use
+							int slot = pairing_slot_for_dongle(dongle_hwid);
+							if(dongle_search_open && slot != ROAM_NO_SLOT) {
+								int32_t received_time = *((uint32_t *) &rx_payload.data[10]);
+								int32_t our_time = tdma_get_time();
+								roam_search_offer(&dongle_search, slot, channel, (uint8_t) rx_payload.rssi, received_time - our_time, k_uptime_get_32());
 							}
 						} else {
 							pairing_dongle_found(&rx_payload);
@@ -191,12 +201,13 @@ void event_handler(struct esb_evt const *event)
 							//uint64_t tracker_hwid = *((uint64_t *) &rx_payload.data[3]) & 0xFFFFFFFFFFFF;
 							if(tracker_id < ESB_STATUS_ERROR) {
 								connection_set_id(tracker_id);
+								roam_link_connected(&link_quality, k_uptime_get_32());
 								esb_set_tracker_state(CONNECTED);
 							} else {
 								if(tracker_id == ESB_STATUS_NOT_PAIRED) {
-									pairing_clear_pair();
+									pairing_forget_active();
 								} else if(tracker_id == ESB_STATUS_NO_SLOTS) {
-									pairing_clear_pair();
+									pairing_forget_active();
 								} else {
 									esb_set_tracker_state(CONNECTION_ERROR);
 								}
@@ -501,17 +512,30 @@ bool esb_ready(void) {
 
 bool find_dongle() {
 	dongle_found = false;
-	LOG_INF("Searching for our dongle %012llX...", (*(uint64_t *)&retained->paired_addr[0] >> 16) & 0xFFFFFFFFFFFF);
+	LOG_INF("Searching for our dongle %012llX...", pairing_get_paired_dongle());
 	clocks_allow_stopping(false);
 	clocks_start();
-	if(esb_initialize(false, true) != 0)
+	roam_search_reset(&dongle_search);
+	dongle_search_open = true;
+	if(esb_initialize(false, true) != 0) {
+		dongle_search_open = false;
 		return false;
+	}
 	uint64_t start = k_uptime_get();
 	while(!dongle_found && start + ESB_SEARCH_TIMEOUT > k_uptime_get()) {
 		k_msleep(20);
-		if(esb_get_tracker_state() != FIND_DONGLE)
+		if(esb_get_tracker_state() != FIND_DONGLE) {
+			dongle_search_open = false;
 			return true;
+		}
+		uint32_t now = k_uptime_get_32();
+		int slot = roam_search_pick(&dongle_search, pairing_paired_mask(), roam_link_avoid_mask(&link_quality, now), pairing_active_slot(), now);
+		if(slot != ROAM_NO_SLOT) {
+			dongle_search_open = false;
+			found_dongle(slot, &dongle_search.candidates[slot]);
+		}
 	}
+	dongle_search_open = false;
 	return dongle_found;
 }
 
@@ -539,8 +563,11 @@ void connect_to_dongle() {
 		esb_write_current();
 		k_msleep(15);
 	}
-	if(esb_get_tracker_state() == DONGLE_CONNECT)
+	if(esb_get_tracker_state() == DONGLE_CONNECT) {
+		if(pairing_has_alternate())
+			roam_link_connect_failed(&link_quality, pairing_active_slot(), k_uptime_get_32());
 		esb_set_tracker_state(FIND_DONGLE);
+	}
 }
 
 bool should_raise_errors() {
@@ -562,6 +589,7 @@ static void esb_thread(void)
 	clocks_start();
 	clock_init_external();
 
+	roam_link_init(&link_quality, k_uptime_get_32());
 	pairing_restore();
 	esb_channel = retained->last_dongle_channel; // TODO Channel bundles?
 	if(esb_channel != 0 && esb_get_tracker_state() == FIND_DONGLE) {
@@ -673,6 +701,11 @@ static void esb_thread(void)
 				else if (tx_errors < TX_ERROR_THRESHOLD && get_status(SYS_STATUS_CONNECTION_ERROR))
 				{
 					set_status(SYS_STATUS_CONNECTION_ERROR, false);
+				}
+				if(esb_get_tracker_state() == CONNECTED && pairing_has_alternate() && roam_link_should_search(&link_quality, k_uptime_get_32())) {
+					LOG_INF("Link is poor, listening for the stronger dongle");
+					esb_set_tracker_state(FIND_DONGLE);
+					break;
 				}
 				if(!connection_process()) {
 					clocks_stop();

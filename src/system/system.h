@@ -20,6 +20,8 @@
 
 #define MAIN_SENSOR_DATA_ID 31
 
+#define PAIRED_2_ID 32
+
 int sys_get_die_temperature(float *ptr);
 
 void configure_sense_pins(void);

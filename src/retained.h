@@ -54,6 +54,10 @@ struct retained_data {
 	uint8_t tdma_window;
 
 	uint8_t sensor_data[128];
+	/* Fills a padding byte: this struct is exactly at its 1 KB limit, so
+	 * nothing larger fits. The second pairing lives only in NVS for that reason.
+	 */
+	uint8_t active_pair_slot;
 
 	float accelBias[3];
 	float gyroBias[3];

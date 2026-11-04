@@ -163,10 +163,14 @@ static void print_sensor(void)
 
 static void print_connection(void)
 {
-	bool paired = retained->paired_addr[0];
-	printk(paired ? "Tracker ID: %u\n" : "Tracker ID: None\n", retained->paired_addr[1]);
+	int active = pairing_active_slot();
+	int other = active == 0 ? 1 : 0;
+	bool paired = (pairing_paired_mask() & (1 << active)) != 0;
+	printk(paired ? "Tracker ID: %u\n" : "Tracker ID: None\n", pairing_get_tracker_id(active));
 	printk("Device address: %012llX\n", *(uint64_t *)NRF_FICR->DEVICEADDR & 0xFFFFFFFFFFFF);
-	printk(paired ? "Receiver address: %012llX\n" : "Receiver address: None\n", (*(uint64_t *)&retained->paired_addr[0] >> 16) & 0xFFFFFFFFFFFF);
+	printk(paired ? "Receiver address: %012llX\n" : "Receiver address: None\n", pairing_get_dongle(active));
+	if (pairing_paired_mask() & (1 << other))
+		printk("Second receiver address: %012llX, tracker ID: %u\n", pairing_get_dongle(other), pairing_get_tracker_id(other));
 	printk("Channel frequency: %d\n", esb_get_frequency());
 	printk("Device status: %d, ESB state: %d\n", get_status(SYS_STATUS_ALL), esb_get_tracker_state());
 }
