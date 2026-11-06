@@ -94,7 +94,7 @@
 	};
 
 	aliases {
-		// sw0 = &button0; // Uncomment to Enable SW0
+		sw0 = &button0; // Uncomment to Enable SW0
 		pwm-led0 = &pwm_led0;
 	};
 
@@ -115,7 +115,7 @@
 	zephyr,user {
 		int0-gpios = <&gpio0 17 0>;
 		led-gpios = <&gpio0 15 GPIO_OPEN_SOURCE>;
-		// clk-gpios = <&gpio0 20 GPIO_OPEN_DRAIN>; // Uncomment and set to correct pin if using an external clock (crystal oscillator)
+		// // clk-gpios = <&gpio0 20 GPIO_OPEN_DRAIN>; // Uncomment and set to correct pin if using an external clock (crystal oscillator)
 		vcc-gpios = <&gpio0 31 0>;
 	};
 

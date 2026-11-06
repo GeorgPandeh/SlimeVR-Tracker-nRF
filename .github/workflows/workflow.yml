@@ -190,28 +190,7 @@ jobs:
       fail-fast: false
       matrix:
         boards: [
-                  {boardname: "promicro_uf2/nrf52840/i2c", fileformat: "uf2", filename: "SlimeNRF_ProMicro_I2C_Tracker"},
-                  {boardname: "promicro_uf2/nrf52840/spi", fileformat: "uf2", filename: "SlimeNRF_ProMicro_SPI_Tracker"},
-                  {boardname: "promicro_uf2/nrf52840/smspi", fileformat: "uf2", filename: "SlimeNRF_ProMicro_smSPI_Tracker"},
-                  {boardname: "promicro_uf2/nrf52840/chrysalis", fileformat: "uf2", filename: "SlimeNRF_ProMicro_Chrysalis_Tracker"},
-                  {boardname: "promicro_uf2/nrf52840/stackedi2c", fileformat: "uf2", filename: "SlimeNRF_ProMicro_Stacked_I2C_Tracker"},
-                  {boardname: "promicro_uf2/nrf52840/stackedspi", fileformat: "uf2", filename: "SlimeNRF_ProMicro_Stacked_SPI_Tracker"},
-                  {boardname: "xiao_ble/nrf52840", fileformat: "uf2", filename: "SlimeNRF_XIAO_Tracker"},
-                  {boardname: "xiao_ble/nrf52840/sense", fileformat: "uf2", filename: "SlimeNRF_XIAO_Sense_Tracker"},
-                  {boardname: "slimenrf_r1/nrf52840", fileformat: "hex", filename: "SlimeNRF_slimenrf_r1_Tracker"},
-                  {boardname: "slimenrf_r2/nrf52832", fileformat: "hex", filename: "SlimeNRF_slimenrf_r2_Tracker"},
-                  {boardname: "slimenrf_r3/nrf52840/uf2", fileformat: "uf2", filename: "SlimeNRF_slimenrf_r3_Tracker"},
-                  {boardname: "slimevrmini_p1_uf2/nrf52833", fileformat: "uf2", filename: "SlimeNRF_slimevrmini_p1_Tracker"},
-                  {boardname: "slimevrmini_p2_uf2/nrf52833", fileformat: "uf2", filename: "SlimeNRF_slimevrmini_p2_Tracker"},
-                  {boardname: "slimevrmini_p3r6_uf2/nrf52833", fileformat: "uf2", filename: "SlimeNRF_slimevrmini_p3_r6_Tracker"},
-                  {boardname: "slimevrmini_p3r7_uf2/nrf52833", fileformat: "uf2", filename: "SlimeNRF_slimevrmini_p3_r7_Tracker"},
-                  {boardname: "slimevrmini_p4_uf2/nrf52833", fileformat: "uf2", filename: "SlimeNRF_slimevrmini_p4r8_Tracker"},
-                  {boardname: "slimevrmini_p4r9_uf2/nrf52833", fileformat: "uf2", filename: "SlimeNRF_slimevrmini_p4r9_Tracker"},
-                  {boardname: "slimevrmini_p4r11_uf2/nrf52833", fileformat: "uf2", filename: "SlimeNRF_slimevrmini_p4r11_Tracker"},
-                  {boardname: "butterfly_r15_uf2/nrf52833", fileformat: "uf2", filename: "SlimeVR_Butterfly_R15_Tracker"},
-                  {boardname: "mochi_uf2/nrf52833", fileformat: "uf2", filename: "SlimeNRF_Mochi_Tracker"},
-                  {boardname: "nrf52dk/nrf52832", fileformat: "hex", filename: "SlimeNRF_nRF52dk_Tracker"},
-                  {boardname: "nrf52840dk/nrf52840", fileformat: "hex", filename: "SlimeNRF_nRF52840dk_Tracker"},
+                  {boardname: "promicro_uf2/nrf52840/stackedspi", fileformat: "uf2", filename: "SlimeNRF_Tracker_NoCLK_NoSleep_SPI_StackedSmol_TwoDongle"},
                 ]
     runs-on: ubuntu-latest
     steps:
@@ -299,6 +278,10 @@ jobs:
               -- \
               -DNCS_TOOLCHAIN_VERSION=NONE \
               -DBOARD_ROOT=../"SlimeVR-Tracker-nRF"
+
+          echo "===== Final settings ====="
+          grep -E 'CONFIG_(USE_SENSOR_CLOCK|USER_EXTRA_ACTIONS|SENSOR_USE_MAG|USE_IMU_WAKE_UP|USE_ACTIVE_TIMEOUT|SENSOR_LP_TIMEOUT|SENSOR_USE_LOW_POWER_2|SENSOR_ROTATION|CLOCK_SOURCE_LFCLK|USB_DEVICE_PRODUCT)' SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/.config || true
+          grep -nE 'pwr-gpios|vcc-gpios|gnd-gpios|clk-gpios|int0-gpios|cs-gpios|sw0 ' SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.dts || true
 
           mv SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${{ matrix.boards.fileformat }} Releases/${{ matrix.boards.filename }}.${{ matrix.boards.fileformat }}
 
